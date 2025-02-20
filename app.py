@@ -11,7 +11,10 @@ import pickle
 import os
 from tqdm import tqdm
 import random
+import sys
 import math
+import pandas as pd
+import json
 
 def setup_init(args):
     random.seed(args.seed)
@@ -40,11 +43,12 @@ def get_args():
     parser = argparse.ArgumentParser(description='test')
     parser.add_argument('--seed', type=int, default=1234, help='')
     parser.add_argument('--model', type=str, default='SMASH', help='')
+    parser.add_argument('--seq_len', type=int, default = 100, help='')
     parser.add_argument('--mode', type=str, default='train', help='')
     parser.add_argument('--total_epochs', type=int, default=1000, help='')
     parser.add_argument('--machine', type=str, default='none', help='')
     parser.add_argument('--dim', type=int, default=2, help='', choices = [1,2,3])
-    parser.add_argument('--dataset', type=str, default='Earthquake',choices=['Earthquake','crime','football'], help='')
+    parser.add_argument('--dataset', type=str, default='Earthquake',choices=['Earthquake','crime','football','ComCat','WHITE'], help='')
     parser.add_argument('--batch_size', type=int, default=64,help='')
     parser.add_argument('--samplingsteps', type=int, default=500, help='')
     parser.add_argument('--per_step', type=int, default=250, help='')
@@ -60,6 +64,14 @@ def get_args():
     parser.add_argument('--loss_lambda', type=float, default=0.5, help='')
     parser.add_argument('--loss_lambda2', type=float, default=1, help='')
     parser.add_argument('--smooth', type=float, default=0.0, help='')
+    parser.add_argument('--Mcut', type=float, help='')
+    parser.add_argument('--catalog_path', type=str, help='')
+    parser.add_argument('--auxiliary_start', type=lambda s : pd.to_datetime(s,format='%Y-%m-%d:%H:%M:%S'), help='')
+    parser.add_argument('--train_nll_start', type=lambda s : pd.to_datetime(s,format='%Y-%m-%d:%H:%M:%S'), help='')
+    parser.add_argument('--val_nll_start', type=lambda s : pd.to_datetime(s,format='%Y-%m-%d:%H:%M:%S'), help='')
+    parser.add_argument('--test_nll_start', type=lambda s : pd.to_datetime(s,format='%Y-%m-%d:%H:%M:%S'), help='')
+    parser.add_argument('--test_nll_end', type=lambda s : pd.to_datetime(s,format='%Y-%m-%d:%H:%M:%S'), help='')
+    parser.add_argument('--marked_output', type=int, default=1, help='')
     args = parser.parse_args()
     args.cuda = torch.cuda.is_available()
     print(args)
@@ -73,15 +85,104 @@ if opt.dataset == 'HawkesGMM':
 
 os.environ['CUDA_VISIBLE_DEVICES'] = str(opt.cuda_id)
 
+def process_split(opt,df,pkl_filename):
+
+    data_array = df.to_numpy()
+    num_batches = len(data_array) // opt.seq_len
+    batches = np.array_split(data_array[:num_batches * opt.seq_len], num_batches)
+
+    batches_list = []
+    for batch in batches:
+        # Subtract the start time from all times in the batch
+        start_time = batch[0, 0]-1  # The first time in the batch
+        batch[:, 0] -= start_time  # Subtract start_time from all time values in the batch
+        
+        # Convert the batch to a list of lists
+        batches_list.append(batch.tolist())
+
+    leftover_rows = data_array[num_batches * opt.seq_len:]
+    if len(leftover_rows) > 0:
+        start_time = leftover_rows[0, 0]-1
+        leftover_rows[:, 0] -= start_time
+        batches_list.append(leftover_rows.tolist())
+
+
+    with open(pkl_filename, 'wb') as file:
+        pickle.dump(batches_list, file)
+
+def preprocess_catalog(opt):
+
+    df = pd.read_csv(
+                    opt.catalog_path,
+                    parse_dates=["time"],
+                    dtype={"url": str, "alert": str},
+                )
+    df = df.sort_values(by='time')
+
+    df = df[['time','magnitude','x','y']]
+
+
+    ### filter events by magnitude threshold
+
+    df = df[df['magnitude']>=opt.Mcut]
+
+    ### create train/val/test dfs
+    aux_df = df[df['time']>=opt.auxiliary_start]
+    aux_df = df[df['time']<opt.train_nll_start]
+
+    # train_df = df[df['time']>=opt.train_nll_start]
+    train_df = df[df['time']>=opt.auxiliary_start]
+    train_df = train_df[train_df['time']< opt.val_nll_start]
+
+    val_df = df[df['time']>=opt.val_nll_start]
+    val_df = val_df[val_df['time']< opt.test_nll_start]
+
+    test_df = df[df['time']>=opt.test_nll_start]
+    test_df = test_df[test_df['time']< opt.test_nll_end]
+
+
+    ## convert datetime to days
+
+    train_df['time'] = (train_df['time']-train_df['time'].min()).dt.total_seconds() / (60*60*24)
+    val_df['time'] = (val_df['time']-val_df['time'].min()).dt.total_seconds() / (60*60*24)
+    test_df['time'] = (test_df['time']-test_df['time'].min()).dt.total_seconds() / (60*60*24)
+
+    # List of DataFrames
+    dfs = [train_df, val_df, test_df]
+
+    # Process each DataFrame
+    for i, df in enumerate(dfs):
+        time_diffs = np.ediff1d(df['time'])
+
+        # Identify the indices where the differences are less than or equal to 0
+        indices_to_drop = np.where(time_diffs <= 0)[0] + 1
+
+        indices_to_drop = df.index[indices_to_drop]
+
+        # Drop the rows with the identified indices
+        dfs[i] = df.drop(index=indices_to_drop)
+
+    # Assign the processed DataFrames back
+    train_df, val_df, test_df = dfs
+
+    assert (np.ediff1d(train_df['time']) > 0).all()
+    assert (np.ediff1d(val_df['time']) > 0).all()
+    assert (np.ediff1d(test_df['time']) > 0).all()
+
+    process_split(opt,train_df,'dataset/{}/seq_len_{}_mag_data_train.pkl'.format(opt.dataset,opt.seq_len))
+    process_split(opt,val_df,'dataset/{}/seq_len_{}_mag_data_val.pkl'.format(opt.dataset,opt.seq_len))
+    process_split(opt,test_df,'dataset/{}/seq_len_{}_mag_data_test.pkl'.format(opt.dataset,opt.seq_len))
+
+
 def data_loader(opt):
 
-    f = open('dataset/{}/data_train.pkl'.format(opt.dataset),'rb')
+    f = open('dataset/{}/seq_len_{}_mag_data_train.pkl'.format(opt.dataset,opt.seq_len),'rb')
     train_data = pickle.load(f)
     train_data = [[list(i) for i in u] for u in train_data]
-    f = open('dataset/{}/data_val.pkl'.format(opt.dataset),'rb')
+    f = open('dataset/{}/seq_len_{}_mag_data_val.pkl'.format(opt.dataset,opt.seq_len),'rb')
     val_data = pickle.load(f)
     val_data = [[list(i) for i in u] for u in val_data]
-    f = open('dataset/{}/data_test.pkl'.format(opt.dataset),'rb')
+    f = open('dataset/{}/seq_len_{}_mag_data_test.pkl'.format(opt.dataset,opt.seq_len),'rb')
     test_data = pickle.load(f)
     test_data = [[list(i) for i in u] for u in test_data]
 
@@ -93,8 +194,6 @@ def data_loader(opt):
         train_data = [[[i[0], math.log(max(i[0]-u[index-1][0],1e-4)) if index>0 else math.log(max(i[0],1e-4)), i[1]+1]+ i[2:] for index, i in enumerate(u)] for u in train_data]
         val_data = [[[i[0], math.log(max(i[0]-u[index-1][0],1e-4)) if index>0 else math.log(max(i[0],1e-4)), i[1]+1]+ i[2:] for index, i in enumerate(u)] for u in val_data]
         test_data = [[[i[0], math.log(max(i[0]-u[index-1][0],1e-4)) if index>0 else math.log(max(i[0],1e-4)), i[1]+1]+ i[2:] for index, i in enumerate(u)] for u in test_data]
-    
-
 
     data_all = train_data+test_data+val_data
 
@@ -113,6 +212,8 @@ def data_loader(opt):
         opt.num_types=int(max([i[2] for u in data_all for i in u])) 
     else:
         opt.num_types = 1
+
+    print('num_types:', opt.num_types)
     
     train_data = [[[normalization(i[j], Max[j], Min[j]) for j in range(len(i))] for i in u] for u in train_data]
     test_data = [[[normalization(i[j], Max[j], Min[j]) for j in range(len(i))] for i in u] for u in test_data]
@@ -121,7 +222,6 @@ def data_loader(opt):
     testloader = get_dataloader(test_data, opt.batch_size, D = opt.dim, shuffle=False)
     valloader = get_dataloader(test_data, opt.batch_size, D = opt.dim, shuffle=False)
     print('Min & Max', (Max, Min), opt.num_types)
-    # sys.exit()
     return trainloader, testloader, valloader, (Max,Min)
 
 
@@ -178,13 +278,20 @@ if __name__ == "__main__":
 
     model_path = opt.save_path
 
+
     if not os.path.exists('./ModelSave'):
         os.mkdir('./ModelSave')
 
     if 'train' in opt.mode and not os.path.exists(model_path):
         os.mkdir(model_path)
 
+    preprocess_catalog(opt)
+
     trainloader, testloader, valloader, (MAX,MIN) = data_loader(opt)
+
+    if not opt.marked_output:
+        opt.loss_lambda = 0
+        print('-----------Unmarked Output-----------------')
 
     model= ScoreMatch_module(
         dim=1+opt.dim,
@@ -334,27 +441,45 @@ if __name__ == "__main__":
                 print('Model Saved to {}'.format(model_path+'model_{}.pkl').format(itr))
             if opt.mode=='test':
                 torch.save([sampled_record_all, gt_record_all], './samples/test_{}_{}_sigma_{}_{}_steps_{}_log_{}.pkl'.format(opt.dataset, opt.model,opt.sigma_time,opt.sigma_loc ,opt.samplingsteps,opt.log_normalization))
+                with open(model_path + "results.json", "w") as f:
+                    json.dump({"cs2_time_all": cs_time_all, 
+                        "cs2_loc_all": cs_loc_all, 
+                        "cs2_time_mean":cs_time_all.mean().item(), 
+                        "cs2_loc_mean":cs_loc_all.mean().item(),
+                        "MAE_time": mae_temporal/total_num,
+                        "MAE_loc": mae_spatial/total_num}, f, indent=4)
                 break
                             
         
-            # validation set
+            # Validation set evaluation
             loss_test_all = 0.0
-            total_num = 0.0
-            for batch in valloader:
-                event_time_non_mask, event_loc_non_mask, enc_out_non_mask = Batch2toModel(batch, Model.transformer)
-                loss = Model.decoder(torch.cat((event_time_non_mask,event_loc_non_mask),dim=-1), enc_out_non_mask)
-                loss_test_all += loss.item() * event_time_non_mask.shape[0]
-                total_num += event_time_non_mask.shape[0]
+            total_num = 0
             
 
-            if loss_test_all < min_loss_test and opt.mode == 'train':
-                early_stop += 1
-                torch.save(Model.state_dict(), model_path+'model_best.pkl')
-                if early_stop >= 50:
-                    break
+            for batch in valloader:
+                event_time_non_mask, event_loc_non_mask, enc_out_non_mask = Batch2toModel(batch, Model.transformer)
+                loss = Model.decoder(torch.cat((event_time_non_mask, event_loc_non_mask), dim=-1), enc_out_non_mask)
+                
+                loss_test_all += loss.item() * event_time_non_mask.shape[0]
+                total_num += event_time_non_mask.shape[0]
+
+            # Compute the average validation loss
+            avg_loss_test = loss_test_all / total_num if total_num > 0 else float('inf')
+
+            # Check if this is the best model so far
+            if avg_loss_test < min_loss_test:
+                print('---------------------------- Model Updated! ------------------------------------')
+                torch.save(Model.state_dict(), opt.save_path + 'model_best.pkl')
+                min_loss_test = avg_loss_test  # Update best loss
+                early_stop = 0  # Reset early stopping counter
             else:
-                early_stop = 0
-            min_loss_test = min(min_loss_test, loss_test_all)
+                early_stop += 1  # Increase early stopping counter
+
+            # Early stopping condition
+            if early_stop >= 15 and opt.mode == 'train':
+                print("Early stopping triggered after 150 epochs without improvement.")
+                break
+
 
        
         if itr < warmup_steps:
@@ -385,7 +510,9 @@ if __name__ == "__main__":
             step += 1
 
             total_num += event_time_non_mask.shape[0]
+        
+        if device.type == 'cuda':
+            with torch.cuda.device("cuda:{}".format(opt.cuda_id)):
+                torch.cuda.empty_cache()
 
-        with torch.cuda.device("cuda:{}".format(opt.cuda_id)):
-            torch.cuda.empty_cache()
         print('------- Training ---- Epoch: {} ;  Loss: {} --------'.format(itr, loss_all/total_num))
