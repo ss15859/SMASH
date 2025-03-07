@@ -16,6 +16,13 @@ import math
 import pandas as pd
 import json
 
+import warnings
+
+# Suppress all warnings
+warnings.filterwarnings("ignore")
+
+# Your code here
+
 def setup_init(args):
     random.seed(args.seed)
     os.environ['PYTHONHASHSEED'] = str(args.seed)
@@ -47,9 +54,9 @@ def get_args():
     parser.add_argument('--mode', type=str, default='train', help='')
     parser.add_argument('--total_epochs', type=int, default=1000, help='')
     parser.add_argument('--machine', type=str, default='none', help='')
-    parser.add_argument('--dim', type=int, default=2, help='', choices = [1,2,3])
+    parser.add_argument('--dim', type=int, default=3, help='', choices = [1,2,3])
     parser.add_argument('--dataset', type=str, default='Earthquake',choices=['Earthquake','crime','football','ComCat','WHITE'], help='')
-    parser.add_argument('--batch_size', type=int, default=64,help='')
+    parser.add_argument('--batch_size', type=int, default=8,help='')
     parser.add_argument('--samplingsteps', type=int, default=500, help='')
     parser.add_argument('--per_step', type=int, default=250, help='')
     parser.add_argument('--cuda_id', type=str, default='0', help='')
@@ -72,9 +79,11 @@ def get_args():
     parser.add_argument('--test_nll_start', type=lambda s : pd.to_datetime(s,format='%Y-%m-%d:%H:%M:%S'), help='')
     parser.add_argument('--test_nll_end', type=lambda s : pd.to_datetime(s,format='%Y-%m-%d:%H:%M:%S'), help='')
     parser.add_argument('--marked_output', type=int, default=1, help='')
+    parser.add_argument('--num_catalogs', type=int, default=10000, help='')
+    parser.add_argument('--day_number', type=int, default=0, help='')
     args = parser.parse_args()
     args.cuda = torch.cuda.is_available()
-    print(args)
+    print(args)  # Add this line to print the arguments
     return args
 
 opt = get_args()
@@ -173,6 +182,95 @@ def preprocess_catalog(opt):
     process_split(opt,val_df,'dataset/{}/seq_len_{}_mag_data_val.pkl'.format(opt.dataset,opt.seq_len))
     process_split(opt,test_df,'dataset/{}/seq_len_{}_mag_data_test.pkl'.format(opt.dataset,opt.seq_len))
 
+def deg2rad(deg):
+    return deg * np.pi / 180
+
+def rad2deg(rad):
+    return rad * 180 / np.pi
+
+def azimuthal_equidistant_inverse(x, y, lat0, lon0, R=6371):
+    """
+    Inverse azimuthal equidistant projection.
+    Converts (x, y) back to (lat, lon) from a center (lat0, lon0).
+    
+    Parameters:
+    - x, y: Projected coordinates (km)
+    - lat0, lon0: Center of the projection (degrees)
+    - R: Radius of the sphere (default: Earth radius in km)
+    
+    Returns:
+    - lat, lon: Geographic coordinates (degrees)
+    """
+    lat0, lon0 = deg2rad(lat0), deg2rad(lon0)
+    
+    r = np.sqrt(x**2 + y**2)
+    c = r / R
+    
+    lat = np.where(r == 0, lat0, np.arcsin(np.cos(c) * np.sin(lat0) + (x * np.sin(c) * np.cos(lat0) / r)))
+    lon = lon0 + np.arctan2(y * np.sin(c), r * np.cos(lat0) * np.cos(c) - x * np.sin(lat0) * np.sin(c))
+    
+    return rad2deg(lat), rad2deg(lon)
+
+
+def create_test_day_dataloader(opt, day_number=opt.day_number, Max=None, Min=None, batch_size=32):
+    df = pd.read_csv(
+                    opt.catalog_path,
+                    parse_dates=["time"],
+                    dtype={"url": str, "alert": str},
+                )
+    df = df.sort_values(by='time')
+    df = df[df['magnitude'] >= opt.Mcut]
+    center_latitude = df['latitude'].mean()
+    center_longitude = df['longitude'].mean()
+    df = df[['time','magnitude','x','y']]
+
+
+    test_day_begin = opt.test_nll_start + pd.Timedelta(days=day_number)
+    print('test_day_begin', test_day_begin)
+    test_day_end = opt.test_nll_start + pd.Timedelta(days=day_number+1)
+    print('test_day_end', test_day_end)
+    test_day_df = df[df['time'] < test_day_begin]
+
+    # Convert Timestamps to numeric days
+    test_day_df['time'] = (test_day_df['time'] - test_day_df['time'].min()).dt.total_seconds() / (60*60*24)
+    test_day_begin = (test_day_begin - df['time'].min()).total_seconds() / (60*60*24)
+    test_day_end = (test_day_end - df['time'].min()).total_seconds() / (60*60*24)
+
+    test_day_array = test_day_df.to_numpy()
+
+
+    # Keep only the last seq_len rows if needed
+    if len(test_day_array) > opt.seq_len:
+        test_day_array = test_day_array[-opt.seq_len:]
+
+    # Convert Timestamps to numeric days
+    start_time = test_day_array[0, 0]  
+
+    start_time_datetime = df['time'].min() + pd.Timedelta(days=start_time-1)
+
+    print('start_time_datetime', start_time_datetime)
+
+    test_day_array[:, 0] = ((test_day_array[:, 0] - start_time) + 1.0)
+    start_time_float = (test_day_begin - start_time) + 1.0
+    end_time_float = (test_day_end - start_time) + 1.0
+    print('end_time_float', end_time_float)
+
+    print('end_datetime', start_time_datetime + pd.Timedelta(days=end_time_float))
+
+    # convert to list of lists
+    test_day_array = [test_day_array.tolist()]*opt.num_catalogs
+
+    if not opt.log_normalization:
+        test_day_data = [[[i[0], i[0]-u[index-1][0] if index>0 else i[0], i[1]+1]+ i[2:] for index, i in enumerate(u)] for u in test_day_array]
+    else:
+        test_day_data = [[[i[0], math.log(max(i[0]-u[index-1][0],1e-4)) if index>0 else math.log(max(i[0],1e-4)), i[1]+1]+ i[2:] for index, i in enumerate(u)] for u in test_day_array]
+
+    test_day_data = [[[normalization(i[j], Max[j], Min[j]) for j in range(len(i))] for i in u] for u in test_day_data]
+
+    test_dayloader = get_dataloader(test_day_data, batch_size=batch_size, D=opt.dim, shuffle=False)
+    print('Min & Max', (Max, Min), opt.num_types)
+    return test_dayloader, start_time_datetime, start_time_float, end_time_float, center_latitude, center_longitude
+
 
 def data_loader(opt):
 
@@ -241,17 +339,19 @@ def Batch2toModel(batch, transformer):
     event_loc = event_loc.to(device)
     
     enc_out, mask = transformer(event_loc, event_time_origin)
-    # print(event_time.size(),event_loc.size(), enc_out.size(),mask.size())
 
+    # print(event_time.size(),event_loc.size(), enc_out.size(),mask.size())
     enc_out_non_mask  = []
     event_time_non_mask = []
     event_loc_non_mask = []
     for index in range(mask.shape[0]):
         length = int(sum(mask[index]).item())
+
         if length>1:
             enc_out_non_mask += [i.unsqueeze(dim=0) for i in enc_out[index][:length-1]]
             event_time_non_mask += [i.unsqueeze(dim=0) for i in event_time[index][1:length]]
             event_loc_non_mask += [i.unsqueeze(dim=0) for i in event_loc[index][1:length]]
+
 
     enc_out_non_mask = torch.cat(enc_out_non_mask,dim=0)
     event_time_non_mask = torch.cat(event_time_non_mask,dim=0)
@@ -329,7 +429,7 @@ if __name__ == "__main__":
     ).to(device)
 
     Model = Model_all(transformer,decoder)
-    if opt.mode == 'test':
+    if opt.mode == 'test' or opt.mode == 'sample':
         Model.load_state_dict(torch.load(opt.weight_path))
         print('Weight loaded!!')
     total_params = sum(p.numel() for p in Model.parameters())
@@ -344,111 +444,244 @@ if __name__ == "__main__":
 
         print('epoch:{}'.format(itr))
 
-        if (itr % 10==0 ) or opt.mode == 'test':
-            print('Evaluate!')
-                
+        if (itr % 10==0 ) or (opt.mode == 'test') or (opt.mode == 'sample'):
+            
             Model.eval()
 
-            # testing set
-            loss_test_all = 0.0         
-            for batch in testloader:
-                event_time_non_mask, event_loc_non_mask, enc_out_non_mask = Batch2toModel(batch, Model.transformer)
-                loss = Model.decoder(torch.cat((event_time_non_mask,event_loc_non_mask),dim=-1), enc_out_non_mask)
-                loss_test_all += loss.item() * event_time_non_mask.shape[0]
+            if opt.mode == 'test':
+            
+                print('Evaluate!')
 
-            current_step = 0
-            is_last = False
-            last_sample = None
-            while current_step < opt.samplingsteps:
-                if (current_step + opt.per_step) >= opt.samplingsteps:
-                    is_last = True
-                cs_time_all = torch.zeros(5)
-                cs_loc_all = torch.zeros(5)
-                cs2_time_all = torch.zeros(5)
-                cs2_loc_all = torch.zeros(5)
-                acc_all = 0
-                ece_all = 0
-                correct_list_all = torch.zeros(10)
-                num_list_all = torch.zeros(10)
-                mae_temporal, mae_spatial, total_num = 0.0, 0.0, 0.0
-                sampled_record_all = []
-                gt_record_all = []
-                for idx, batch in enumerate(testloader):
+                # testing set
+                loss_test_all = 0.0         
+                for batch in testloader:
                     event_time_non_mask, event_loc_non_mask, enc_out_non_mask = Batch2toModel(batch, Model.transformer)
-                    real_time = denormalization(event_time_non_mask[:,0,:], MAX[1], MIN[1], opt.log_normalization)
-                    real_loc = event_loc_non_mask[:,0,:]
-                    real_loc = denormalization(real_loc, torch.tensor([MAX[2:]]), torch.tensor([MIN[2:]]))
-                    total_num += real_loc.shape[0]
-                    gt_record_all.append(torch.cat((real_time,real_loc),-1))
-                    
-                    
-                    sampled_seq_all, sampled_seq_temporal_all, sampled_seq_spatial_all, sampled_seq_mark_all = [], [], [], []
-                    for i in range(int(300/opt.n_samples)):
-                        sampled_seq, score_mark = Model.decoder.sample_from_last(batch_size = event_time_non_mask.shape[0],step=opt.per_step, is_last = is_last, cond=enc_out_non_mask, last_sample = last_sample[idx][i] if last_sample is not None else None)
-                        # print(sampled_seq, score_mark)
-                        sampled_seq_all.append((sampled_seq.detach(),score_mark.detach() if score_mark is not None else None))
-                        sampled_seq_temporal_all.append(denormalization(sampled_seq[:,:,0], MAX[1], MIN[1], opt.log_normalization))
-                        sampled_seq_spatial_all.append(denormalization(sampled_seq[:,:,-2:], torch.tensor([MAX[-2:]]), torch.tensor([MIN[-2:]])))
-                        sampled_seq_mark_all.append(score_mark.detach().cpu())
-                    
-                    sampled_record_all.append(sampled_seq_all)
-                    gen_time = torch.cat(sampled_seq_temporal_all,1).mean(1,keepdim=True)
-                    assert real_time.shape==gen_time.shape
-                    mae_temporal += torch.abs(real_time-gen_time).sum().item()
-                
-                    gen_loc = torch.cat(sampled_seq_spatial_all,1).mean(1)
-                    assert real_loc[:,-2:].shape==gen_loc.shape
-                    mae_spatial += torch.sqrt(torch.sum((real_loc[:,-2:]-gen_loc)**2,dim=-1)).sum().item()
-                    
-                    if score_mark is not None:
-                        gen_mark = torch.mode(torch.max(torch.cat(sampled_seq_mark_all,1), dim=-1)[1],1)[0]
-                        acc_all += torch.sum(gen_mark == (real_loc[:,0]-1))
+                    loss = Model.decoder(torch.cat((event_time_non_mask,event_loc_non_mask),dim=-1), enc_out_non_mask)
+                    loss_test_all += loss.item() * event_time_non_mask.shape[0]
 
+                current_step = 0
+                is_last = False
+                last_sample = None
+                while current_step < opt.samplingsteps:
+                    if (current_step + opt.per_step) >= opt.samplingsteps:
+                        is_last = True
+                    cs_time_all = torch.zeros(5)
+                    cs_loc_all = torch.zeros(5)
+                    cs2_time_all = torch.zeros(5)
+                    cs2_loc_all = torch.zeros(5)
+                    acc_all = 0
+                    ece_all = 0
+                    correct_list_all = torch.zeros(10)
+                    num_list_all = torch.zeros(10)
+                    mae_temporal, mae_spatial, total_num = 0.0, 0.0, 0.0
+                    sampled_record_all = []
+                    gt_record_all = []
+
+                    for idx, batch in enumerate(testloader):
+
+                        event_time_non_mask, event_loc_non_mask, enc_out_non_mask = Batch2toModel(batch, Model.transformer)
+
+
+                        real_time = denormalization(event_time_non_mask[:,0,:], MAX[1], MIN[1], opt.log_normalization)
+                        real_loc = event_loc_non_mask[:,0,:]
+                        real_loc = denormalization(real_loc, torch.tensor([MAX[2:]]), torch.tensor([MIN[2:]]))
+
+                        total_num += real_loc.shape[0]
+                        gt_record_all.append(torch.cat((real_time,real_loc),-1))
+                        
+                        
+                        sampled_seq_all, sampled_seq_temporal_all, sampled_seq_spatial_all, sampled_seq_mark_all = [], [], [], []
+                        for i in range(int(300/opt.n_samples)):
+                            sampled_seq, score_mark = Model.decoder.sample_from_last(batch_size = event_time_non_mask.shape[0],step=opt.per_step, is_last = is_last, cond=enc_out_non_mask, last_sample = last_sample[idx][i] if last_sample is not None else None)
+
+                            print("sampled_seq.shape",sampled_seq.shape)
+
+                            sampled_seq_all.append((sampled_seq.detach(),score_mark.detach() if score_mark is not None else None))
+                            sampled_seq_temporal_all.append(denormalization(sampled_seq[:,:,0], MAX[1], MIN[1], opt.log_normalization))
+                            sampled_seq_spatial_all.append(denormalization(sampled_seq[:,:,-2:], torch.tensor([MAX[-2:]]), torch.tensor([MIN[-2:]])))
+                            sampled_seq_mark_all.append(score_mark.detach().cpu())
+                        
+                        sampled_record_all.append(sampled_seq_all)
+                        gen_time = torch.cat(sampled_seq_temporal_all,1).mean(1,keepdim=True)
+                        assert real_time.shape==gen_time.shape
+                        mae_temporal += torch.abs(real_time-gen_time).sum().item()
+                    
+                        gen_loc = torch.cat(sampled_seq_spatial_all,1).mean(1)
+                        assert real_loc[:,-2:].shape==gen_loc.shape
+                        mae_spatial += torch.sqrt(torch.sum((real_loc[:,-2:]-gen_loc)**2,dim=-1)).sum().item()
+                        
+                        if score_mark is not None:
+                            gen_mark = torch.mode(torch.max(torch.cat(sampled_seq_mark_all,1), dim=-1)[1],1)[0]
+                            acc_all += torch.sum(gen_mark == (real_loc[:,0]-1))
+
+
+                        if opt.mode=='test':
+                            calibration_score = get_calibration_score(sampled_seq_temporal_all, sampled_seq_spatial_all, sampled_seq_mark_all, real_time, real_loc)
+                            cs_time_all += calibration_score[0]
+                            cs_loc_all += calibration_score[1]
+                            cs2_time_all += calibration_score[2]
+                            cs2_loc_all += calibration_score[3]
+                            if score_mark is not None:
+                                ece_all += calibration_score[4]
+                                correct_list_all += calibration_score[5]
+                                num_list_all += calibration_score[6]
+
+                    last_sample = sampled_record_all
+                    current_step += opt.per_step
 
                     if opt.mode=='test':
-                        calibration_score = get_calibration_score(sampled_seq_temporal_all, sampled_seq_spatial_all, sampled_seq_mark_all, real_time, real_loc)
-                        cs_time_all += calibration_score[0]
-                        cs_loc_all += calibration_score[1]
-                        cs2_time_all += calibration_score[2]
-                        cs2_loc_all += calibration_score[3]
+                        cs_time_all /= total_num
+                        cs_loc_all /= total_num
+                        cs2_time_all /= total_num
+                        cs2_loc_all /= total_num
+                        ece_all /= total_num
+                        correct_list_all /= num_list_all
+                        print('Step: ',current_step)
+                        print('Calibration Score Quantile: ',cs2_time_all, cs2_loc_all)
+                        print('Calibration Score: ',cs_time_all.mean().item(), cs_loc_all.mean().item())
+                        print('MAE: ',mae_temporal/total_num, mae_spatial/total_num)
                         if score_mark is not None:
-                            ece_all += calibration_score[4]
-                            correct_list_all += calibration_score[5]
-                            num_list_all += calibration_score[6]
-
-                last_sample = sampled_record_all
-                current_step += opt.per_step
+                            print('Mark: ',acc_all/total_num, ece_all, correct_list_all)
+                    
+                    global_step = itr if opt.mode=='train' else current_step
 
                 if opt.mode=='test':
-                    cs_time_all /= total_num
-                    cs_loc_all /= total_num
-                    cs2_time_all /= total_num
-                    cs2_loc_all /= total_num
-                    ece_all /= total_num
-                    correct_list_all /= num_list_all
-                    print('Step: ',current_step)
-                    print('Calibration Score Quantile: ',cs2_time_all, cs2_loc_all)
-                    print('Calibration Score: ',cs_time_all.mean().item(), cs_loc_all.mean().item())
-                    print('MAE: ',mae_temporal/total_num, mae_spatial/total_num)
-                    if score_mark is not None:
-                        print('Mark: ',acc_all/total_num, ece_all, correct_list_all)
-                
-                global_step = itr if opt.mode=='train' else current_step
+                    torch.save([sampled_record_all, gt_record_all], './samples/test_{}_{}_sigma_{}_{}_steps_{}_log_{}seq_len_{}_marked_output_{}.pkl'.format(opt.dataset, opt.model,opt.sigma_time,opt.sigma_loc ,opt.samplingsteps,opt.log_normalization,opt.seq_len,opt.marked_output))
+                    with open(model_path + "results.json", "w") as f:
+                        json.dump({"cs2_time_all": cs_time_all, 
+                            "cs2_loc_all": cs2_loc_all, 
+                            "cs2_time_mean":cs_time_all.mean().item(), 
+                            "cs2_loc_mean":cs_loc_all.mean().item(),
+                            "MAE_time": mae_temporal/total_num,
+                            "MAE_loc": mae_spatial/total_num}, f, indent=4)
+                    break
+
+
+            if opt.mode == 'sample':
+
+                test_day_loader, start_time_datetime, start_time_float, end_time_float, center_lat, center_lon = create_test_day_dataloader(opt, day_number=opt.day_number, Max=MAX, Min=MIN,batch_size=512)
+
+                print('Sampling!')
+                for idx, batch in enumerate(test_day_loader):
+                    print('Batch {} of {}'.format(idx, len(test_day_loader)))
+                    which_under_end_time = torch.ones(1, batch[0].shape[0], dtype=torch.bool)
+                    # create a list of indexes that are alive based on the index within the whole test data
+                    indexes_alive = list(range(idx*batch[0].shape[0], (idx+1)*batch[0].shape[0]))
+
+                    # create an empty df to store the generated events
+                    gen_df = pd.DataFrame(columns=['mag','time_string','x','y','depth','catalog_id'])
+                    
+                    round_number = 0
+                    # while at least one random sequence is whithin the forecast horizon
+                    while which_under_end_time.sum() > 0:
+
+                        round_number += 1
+                        print('Generation:', round_number)
+                        sampled_record_all = []
+                        current_step = 0
+                        is_last = False
+                        last_sample = None
+                    
+                        while current_step < opt.samplingsteps:
+                            if (current_step + opt.per_step) >= opt.samplingsteps:
+                                is_last = True
+                            
+                            event_time_non_mask, event_loc_non_mask, enc_out_non_mask = Batch2toModel(batch, Model.transformer)
+
+                            
+                                                    
+                            sampled_seq, score_mark = Model.decoder.sample_from_last(batch_size = event_time_non_mask.shape[0],
+                                                                                        step=opt.per_step, 
+                                                                                        is_last = is_last, 
+                                                                                        cond=enc_out_non_mask, 
+                                                                                        last_sample = last_sample if last_sample is not None else None)
+
+                            sampled_seq_all = (sampled_seq.detach(),score_mark.detach() if score_mark is not None else None)
+                            sampled_seq_temporal_all = denormalization(sampled_seq[:,:,0], MAX[1], MIN[1], opt.log_normalization).detach()
+                            sampled_seq_spatial_all = denormalization(sampled_seq[:,:,-2:], torch.tensor([MAX[-2:]]), torch.tensor([MIN[-2:]])).detach()
+                            sampled_seq_mark_all = score_mark.detach()
+
+                            last_sample = sampled_seq_all
+                            current_step += opt.per_step
+                            
+                            global_step = itr if opt.mode=='train' else current_step
+
+                        # extract every multiple of opt.seq_len-th element
+                        last_event_times = batch[0][:,-1]
+                        gen_interevent_times = sampled_seq_temporal_all[opt.seq_len-2::opt.seq_len-1].cpu()
+                        gen_event_times = last_event_times + gen_interevent_times.t()
+                        gen_event_datetimes = start_time_datetime + pd.to_timedelta(gen_event_times.numpy().flatten(),unit='D')
+                        gen_event_locs = sampled_seq_spatial_all[opt.seq_len-2::opt.seq_len-1,:,:]
+                        gen_events = sampled_seq[opt.seq_len-2::opt.seq_len-1,:,:].cpu()
+                        gen_mark = torch.mode(torch.max(sampled_seq_mark_all[opt.seq_len-2::opt.seq_len-1,:,:],dim=-1)[1],1)[0].cpu()
+
+
+                        gen_events = torch.cat((gen_event_times.t().unsqueeze(dim=2), gen_events, gen_mark.unsqueeze(dim=1).unsqueeze(dim=2)), dim=-1)
+
+                        which_over_start_time = (gen_event_times > start_time_float)[0]
+                        which_under_end_time = (gen_event_times < end_time_float)[0]
+                        # only keep indexes which unders the end time return empty list if none
+                        indexes_alive = [i for idx, i in enumerate(indexes_alive) if which_under_end_time[idx].item()]
+
+                        # Append the generated events to the DataFrame using pd.concat
+                        for idx, i in enumerate(indexes_alive):
+                            if (which_under_end_time[idx].item()) and (which_over_start_time[idx].item()):
+                                new_row = pd.DataFrame([{
+                                    'mag': gen_mark[idx].item()+1,
+                                    'time_string': gen_event_datetimes[idx].strftime('%Y-%m-%dT%H:%M:%S'),
+                                    'x': gen_event_locs[idx, 0, 0].item(),
+                                    'y': gen_event_locs[idx, 0, 1].item(),
+                                    'depth': 0,
+                                    'catalog_id': i
+                                }])
+                                gen_df = pd.concat([gen_df, new_row], ignore_index=True) 
+
+                        # modify the batch to include the generated events
+                        batch_list = list(batch)
+                        # Add to the end of the batch
+                        for i in range(len(batch_list)):
+                            batch_list[i] = torch.cat((batch_list[i], gen_events[:, :, i]), dim=1)
+                            # remove the first element of the batch
+                            batch_list[i] = batch_list[i][:, 1:]
+                            # remove which over the end time
+                            batch_list[i] = batch_list[i][which_under_end_time,:]
+
+                        # Convert the list back to a tuple 
+                        batch = tuple(batch_list)
+
+                    # remove rows that are outside the forecast horizon opt.test_nll_start + pd.Timedelta(days=opt.day_number+1)
+                    # gen_df = gen_df[gen_df['time_string'] > (opt.test_nll_start+ pd.Timedelta(days=opt.day_number)).strftime('%Y-%m-%dT%H:%M:%S')]
+
+
+                    # perform azimuthal equidistant projection inverse on x and y  
+                    gen_df['lat'], gen_df['lon'] = azimuthal_equidistant_inverse(gen_df['x'], gen_df['y'], center_lat, center_lon)
+
+                    # only keep lat lon mag','time_string',,'depth','catalog_id
+                    gen_df = gen_df[['lon','lat','mag','time_string','depth','catalog_id']]
+
+                    # sort the df by catalog_id then time_string
+                    gen_df = gen_df.sort_values(by=['catalog_id','time_string'])
+
+                    # write batch to csv
+                    if not os.path.exists('daily_forecasts/{}'.format(opt.dataset)):
+                        os.mkdir('daily_forecasts/{}'.format(opt.dataset))
+                    
+                    if not os.path.exists('daily_forecasts/{}/CSEP_test_day_{}.csv'.format(opt.dataset, opt.day_number)):
+                        gen_df.to_csv('daily_forecasts/{}/CSEP_test_day_{}.csv'.format(opt.dataset, opt.day_number), index=False)
+                    else:
+                        gen_df.to_csv('daily_forecasts/{}/CSEP_test_day_{}.csv'.format(opt.dataset, opt.day_number), mode='a', header=False, index=False)
+                    
+
+
+                if opt.mode == 'sample':
+                    print('Sampling Done!')
+                    break
 
   
             if opt.mode == 'train':
                 torch.save(Model.state_dict(), model_path+'model_{}.pkl'.format(itr))
                 print('Model Saved to {}'.format(model_path+'model_{}.pkl').format(itr))
-            if opt.mode=='test':
-                torch.save([sampled_record_all, gt_record_all], './samples/test_{}_{}_sigma_{}_{}_steps_{}_log_{}.pkl'.format(opt.dataset, opt.model,opt.sigma_time,opt.sigma_loc ,opt.samplingsteps,opt.log_normalization))
-                with open(model_path + "results.json", "w") as f:
-                    json.dump({"cs2_time_all": cs_time_all, 
-                        "cs2_loc_all": cs_loc_all, 
-                        "cs2_time_mean":cs_time_all.mean().item(), 
-                        "cs2_loc_mean":cs_loc_all.mean().item(),
-                        "MAE_time": mae_temporal/total_num,
-                        "MAE_loc": mae_spatial/total_num}, f, indent=4)
-                break
+            
                             
         
             # Validation set evaluation
@@ -516,3 +749,7 @@ if __name__ == "__main__":
                 torch.cuda.empty_cache()
 
         print('------- Training ---- Epoch: {} ;  Loss: {} --------'.format(itr, loss_all/total_num))
+
+
+
+

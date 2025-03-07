@@ -94,7 +94,7 @@ def get_dataloader(data, batch_size, D = 2, shuffle=True):
 
     dl = torch.utils.data.DataLoader(
         ds,
-        num_workers=4,
+        num_workers=3,
         batch_size=batch_size,
         collate_fn= collate[D],
         shuffle=shuffle
