@@ -15,6 +15,12 @@ slurm_outputs/
 !/ModelSave/dataset_SanJac_model_SMASH_sigma_0.2_0.25_log_1_seed_2_dim_16_lambda_0.5_seq_len_150_marked_output_1/model_best.pkl
 !/ModelSave/dataset_SaltonSea_model_SMASH_sigma_0.2_0.25_log_1_seed_2_dim_16_lambda_0.5_seq_len_150_marked_output_1/model_best.pkl
 
+!/dataset/SCEDC/*
+!/dataset/ComCat/*
+!/dataset/WHITE/*
+!/dataset/SanJac/*
+!/dataset/SaltonSea/*
+
 # temp python files
 process_slurm_outputs.py
 test_projection.py
