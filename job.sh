@@ -1,13 +1,13 @@
 #!/bin/bash
+#SBATCH --nodes=1
+#SBATCH --time=50:00:00
+#SBATCH --gres=gpu:1
+#SBATCH --job-name=train_SMASH
+#SBATCH --partition=gpu
+#SBATCH --account=MATH026082
 
-#SBATCH --job-name=train_earthquake
-#SBATCH --gpus=1
-#SBATCH --time=24:00:00
-
-
-
-module load cudatoolkit/23.9_12.2
-conda activate SMASH
+source /user/work/ss15859/miniforge3/etc/profile.d/conda.sh
+conda activate earthquakeNPP
 
 cd scripts
 

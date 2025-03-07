@@ -6,8 +6,17 @@
 *.png
 *.pyc
 *.csv
+slurm_outputs/
+
+# Unignore saved models
+!/ModelSave/dataset_ComCat_model_SMASH_sigma_0.2_0.25_log_1_seed_2_dim_16_lambda_0.5_seq_len_150_marked_output_1/model_best.pkl
+!/ModelSave/dataset_WHITE_model_SMASH_sigma_0.2_0.25_log_1_seed_2_dim_16_lambda_0.5_seq_len_150_marked_output_1/model_best.pkl
+!/ModelSave/dataset_SCEDC_model_SMASH_sigma_0.2_0.25_log_1_seed_2_dim_16_lambda_0.5_seq_len_150_marked_output_1/model_best.pkl
+!/ModelSave/dataset_SanJac_model_SMASH_sigma_0.2_0.25_log_1_seed_2_dim_16_lambda_0.5_seq_len_150_marked_output_1/model_best.pkl
+!/ModelSave/dataset_SaltonSea_model_SMASH_sigma_0.2_0.25_log_1_seed_2_dim_16_lambda_0.5_seq_len_150_marked_output_1/model_best.pkl
 
 # temp python files
 process_slurm_outputs.py
 test_projection.py
 visualize_samples.py
+

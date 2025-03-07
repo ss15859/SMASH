@@ -55,7 +55,7 @@ def get_args():
     parser.add_argument('--total_epochs', type=int, default=1000, help='')
     parser.add_argument('--machine', type=str, default='none', help='')
     parser.add_argument('--dim', type=int, default=3, help='', choices = [1,2,3])
-    parser.add_argument('--dataset', type=str, default='Earthquake',choices=['Earthquake','crime','football','ComCat','WHITE'], help='')
+    parser.add_argument('--dataset', type=str, default='Earthquake',choices=['Earthquake','crime','football','ComCat','WHITE','SCEDC','SaltonSea','SanJac'], help='')
     parser.add_argument('--batch_size', type=int, default=8,help='')
     parser.add_argument('--samplingsteps', type=int, default=500, help='')
     parser.add_argument('--per_step', type=int, default=250, help='')
@@ -79,7 +79,7 @@ def get_args():
     parser.add_argument('--test_nll_start', type=lambda s : pd.to_datetime(s,format='%Y-%m-%d:%H:%M:%S'), help='')
     parser.add_argument('--test_nll_end', type=lambda s : pd.to_datetime(s,format='%Y-%m-%d:%H:%M:%S'), help='')
     parser.add_argument('--marked_output', type=int, default=1, help='')
-    parser.add_argument('--num_catalogs', type=int, default=10000, help='')
+    parser.add_argument('--num_catalogs', type=int, default=5000, help='')
     parser.add_argument('--day_number', type=int, default=0, help='')
     args = parser.parse_args()
     args.cuda = torch.cuda.is_available()
@@ -559,7 +559,7 @@ if __name__ == "__main__":
 
             if opt.mode == 'sample':
 
-                test_day_loader, start_time_datetime, start_time_float, end_time_float, center_lat, center_lon = create_test_day_dataloader(opt, day_number=opt.day_number, Max=MAX, Min=MIN,batch_size=512)
+                test_day_loader, start_time_datetime, start_time_float, end_time_float, center_lat, center_lon = create_test_day_dataloader(opt, day_number=opt.day_number, Max=MAX, Min=MIN,batch_size=opt.batch_size)
 
                 print('Sampling!')
                 for idx, batch in enumerate(test_day_loader):
@@ -649,9 +649,6 @@ if __name__ == "__main__":
                         # Convert the list back to a tuple 
                         batch = tuple(batch_list)
 
-                    # remove rows that are outside the forecast horizon opt.test_nll_start + pd.Timedelta(days=opt.day_number+1)
-                    # gen_df = gen_df[gen_df['time_string'] > (opt.test_nll_start+ pd.Timedelta(days=opt.day_number)).strftime('%Y-%m-%dT%H:%M:%S')]
-
 
                     # perform azimuthal equidistant projection inverse on x and y  
                     gen_df['lat'], gen_df['lon'] = azimuthal_equidistant_inverse(gen_df['x'], gen_df['y'], center_lat, center_lon)
@@ -663,13 +660,16 @@ if __name__ == "__main__":
                     gen_df = gen_df.sort_values(by=['catalog_id','time_string'])
 
                     # write batch to csv
-                    if not os.path.exists('daily_forecasts/{}'.format(opt.dataset)):
-                        os.mkdir('daily_forecasts/{}'.format(opt.dataset))
+                    if not os.path.exists('/user/work/ss15859/SMASH_daily_forecasts'):
+                        os.mkdir('/user/work/ss15859/SMASH_daily_forecasts')
+
+                    if not os.path.exists('/user/work/ss15859/SMASH_daily_forecasts/{}'.format(opt.dataset)):
+                        os.mkdir('/user/work/ss15859/SMASH_daily_forecasts/{}'.format(opt.dataset))
                     
-                    if not os.path.exists('daily_forecasts/{}/CSEP_test_day_{}.csv'.format(opt.dataset, opt.day_number)):
-                        gen_df.to_csv('daily_forecasts/{}/CSEP_test_day_{}.csv'.format(opt.dataset, opt.day_number), index=False)
+                    if not os.path.exists('/user/work/ss15859/SMASH_daily_forecasts/{}/CSEP_test_day_{}.csv'.format(opt.dataset, opt.day_number)):
+                        gen_df.to_csv('/user/work/ss15859/SMASH_daily_forecasts/{}/CSEP_test_day_{}.csv'.format(opt.dataset, opt.day_number), index=False)
                     else:
-                        gen_df.to_csv('daily_forecasts/{}/CSEP_test_day_{}.csv'.format(opt.dataset, opt.day_number), mode='a', header=False, index=False)
+                        gen_df.to_csv('/user/work/ss15859/SMASH_daily_forecasts/{}/CSEP_test_day_{}.csv'.format(opt.dataset, opt.day_number), mode='a', header=False, index=False)
                     
 
 
