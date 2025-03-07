@@ -43,6 +43,6 @@ num_days = (test_nll_end - test_nll_start).days
 
 # Loop over each day and submit a job
 for day_number in range(num_days):
-    command = f"sbatch job.sh {args.dataset} {day_number} {batch_size}"
+    command = f"sbatch --output=slurm_outputs/{args.dataset}_day_{day_number}.out job.sh {args.dataset} {day_number} {batch_size}"
     os.system(command)
     print(f"Submitted job for day {day_number}")
