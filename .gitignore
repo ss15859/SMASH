@@ -27,6 +27,7 @@ slurm_outputs/
 process_slurm_outputs.py
 test_projection.py
 visualize_samples.py
+fix_catalog_id.py
 
 
 

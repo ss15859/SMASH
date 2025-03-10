@@ -254,22 +254,24 @@ class SMASH(nn.Module):
         num_types = 1,
         loss_lambda =1,
         loss_lambda2 =1,
-        smooth = 0.0
+        smooth = 0.0,
+        device = 'cuda'
     ):
         super(SMASH, self).__init__()
         self.model = model
+        self.device  = device
         self.channels = n_samples
         self.num_noise = num_noise
         self.self_condition = self.model.self_condition
         self.is_marked = num_types > 1
         self.num_types = num_types
         self.loss_lambda = loss_lambda
-        self.loss_lambda2 = torch.tensor([1.,loss_lambda2, loss_lambda2]).cuda()
+        self.loss_lambda2 = torch.tensor([1., loss_lambda2, loss_lambda2], device=self.device)
         self.smooth = smooth
 
         self.seq_length = seq_length
         self.sampling_timesteps = sampling_timesteps
-        self.sigma = torch.tensor([sigma[0],sigma[1],sigma[1]]).cuda()
+        self.sigma = torch.tensor([sigma[0], sigma[1], sigma[1]], device=self.device)
         self.langevin_step = langevin_step
         self.n_samples = n_samples
         self.sampling_method = sampling_method
@@ -315,7 +317,7 @@ class SMASH(nn.Module):
             
             else:
                 x = 0.5*torch.randn([*shape], device=cond.device)
-                mark = torch.multinomial(torch.ones(self.num_types).cuda(),batch_size*n_samples, replacement=True).reshape(batch_size,n_samples).cuda() # batch*len-1*num_samples  
+                mark = torch.multinomial(torch.ones(self.num_types, device=cond.device),batch_size * n_samples,replacement=True).reshape(batch_size, n_samples).to(cond.device) # batch*len-1*num_samples  
     
 # torch.ones(self.num_types).cuda()
             sqrt_e = math.sqrt(e)

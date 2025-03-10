@@ -88,6 +88,7 @@ def get_args():
 
 opt = get_args()
 device = torch.device("cuda:{}".format(opt.cuda_id) if opt.cuda else "cpu")
+# device = torch.device("cpu")
 
 if opt.dataset == 'HawkesGMM':
     opt.dim=1
@@ -410,7 +411,8 @@ if __name__ == "__main__":
         num_types=opt.num_types,
         loss_lambda = opt.loss_lambda,
         loss_lambda2 = opt.loss_lambda2,
-        smooth=opt.smooth
+        smooth=opt.smooth,
+        device=device
     ).to(device)
 
     transformer = Transformer_ST(
@@ -566,7 +568,7 @@ if __name__ == "__main__":
                     print('Batch {} of {}'.format(idx, len(test_day_loader)))
                     which_under_end_time = torch.ones(1, batch[0].shape[0], dtype=torch.bool)
                     # create a list of indexes that are alive based on the index within the whole test data
-                    indexes_alive = list(range(idx*batch[0].shape[0], (idx+1)*batch[0].shape[0]))
+                    indexes_alive = list(range(idx*opt.batch_size, idx*opt.batch_size+ batch[0].shape[0]))
 
                     # create an empty df to store the generated events
                     gen_df = pd.DataFrame(columns=['mag','time_string','x','y','depth','catalog_id'])
@@ -583,14 +585,16 @@ if __name__ == "__main__":
                         last_sample = None
                     
                         while current_step < opt.samplingsteps:
+                            print('Step:', current_step)
                             if (current_step + opt.per_step) >= opt.samplingsteps:
                                 is_last = True
                             
                             event_time_non_mask, event_loc_non_mask, enc_out_non_mask = Batch2toModel(batch, Model.transformer)
 
-                            
+                            # isolate last event in the batch
+                            enc_out_non_mask = enc_out_non_mask[opt.seq_len-2::opt.seq_len-1,:,:]
                                                     
-                            sampled_seq, score_mark = Model.decoder.sample_from_last(batch_size = event_time_non_mask.shape[0],
+                            sampled_seq, score_mark = Model.decoder.sample_from_last(batch_size = enc_out_non_mask.shape[0],
                                                                                         step=opt.per_step, 
                                                                                         is_last = is_last, 
                                                                                         cond=enc_out_non_mask, 
@@ -606,17 +610,15 @@ if __name__ == "__main__":
                             
                             global_step = itr if opt.mode=='train' else current_step
 
-                        # extract every multiple of opt.seq_len-th element
+
+                        # convert the generated events to datetime
                         last_event_times = batch[0][:,-1]
-                        gen_interevent_times = sampled_seq_temporal_all[opt.seq_len-2::opt.seq_len-1].cpu()
-                        gen_event_times = last_event_times + gen_interevent_times.t()
+                        gen_event_times = last_event_times + sampled_seq_temporal_all.cpu().t()
                         gen_event_datetimes = start_time_datetime + pd.to_timedelta(gen_event_times.numpy().flatten(),unit='D')
-                        gen_event_locs = sampled_seq_spatial_all[opt.seq_len-2::opt.seq_len-1,:,:]
-                        gen_events = sampled_seq[opt.seq_len-2::opt.seq_len-1,:,:].cpu()
-                        gen_mark = torch.mode(torch.max(sampled_seq_mark_all[opt.seq_len-2::opt.seq_len-1,:,:],dim=-1)[1],1)[0].cpu()
+                        gen_mark = torch.mode(torch.max(sampled_seq_mark_all,dim=-1)[1],1)[0].cpu()
 
 
-                        gen_events = torch.cat((gen_event_times.t().unsqueeze(dim=2), gen_events, gen_mark.unsqueeze(dim=1).unsqueeze(dim=2)), dim=-1)
+                        gen_events = torch.cat((gen_event_times.t().unsqueeze(dim=2), sampled_seq.cpu(), gen_mark.unsqueeze(dim=1).unsqueeze(dim=2)), dim=-1)
 
                         which_over_start_time = (gen_event_times > start_time_float)[0]
                         which_under_end_time = (gen_event_times < end_time_float)[0]
@@ -629,12 +631,13 @@ if __name__ == "__main__":
                                 new_row = pd.DataFrame([{
                                     'mag': gen_mark[idx].item()+1,
                                     'time_string': gen_event_datetimes[idx].strftime('%Y-%m-%dT%H:%M:%S'),
-                                    'x': gen_event_locs[idx, 0, 0].item(),
-                                    'y': gen_event_locs[idx, 0, 1].item(),
+                                    'x': sampled_seq_spatial_all[idx, 0, 0].item(),
+                                    'y': sampled_seq_spatial_all[idx, 0, 1].item(),
                                     'depth': 0,
                                     'catalog_id': i
                                 }])
                                 gen_df = pd.concat([gen_df, new_row], ignore_index=True) 
+                        
 
                         # modify the batch to include the generated events
                         batch_list = list(batch)
@@ -659,17 +662,20 @@ if __name__ == "__main__":
                     # sort the df by catalog_id then time_string
                     gen_df = gen_df.sort_values(by=['catalog_id','time_string'])
 
-                    # write batch to csv
-                    if not os.path.exists('/user/work/ss15859/SMASH_daily_forecasts'):
-                        os.mkdir('/user/work/ss15859/SMASH_daily_forecasts')
+                    path_to_forecasts = './'
+                    # path_to_forecasts = '/user/work/ss15859/'
 
-                    if not os.path.exists('/user/work/ss15859/SMASH_daily_forecasts/{}'.format(opt.dataset)):
-                        os.mkdir('/user/work/ss15859/SMASH_daily_forecasts/{}'.format(opt.dataset))
+                    # write batch to csv
+                    if not os.path.exists(path_to_forecasts +'SMASH_daily_forecasts'):
+                        os.mkdir(path_to_forecasts +'SMASH_daily_forecasts')
+
+                    if not os.path.exists(path_to_forecasts +'SMASH_daily_forecasts/{}'.format(opt.dataset)):
+                        os.mkdir(path_to_forecasts +'SMASH_daily_forecasts/{}'.format(opt.dataset))
                     
-                    if not os.path.exists('/user/work/ss15859/SMASH_daily_forecasts/{}/CSEP_test_day_{}.csv'.format(opt.dataset, opt.day_number)):
-                        gen_df.to_csv('/user/work/ss15859/SMASH_daily_forecasts/{}/CSEP_test_day_{}.csv'.format(opt.dataset, opt.day_number), index=False)
+                    if not os.path.exists(path_to_forecasts +'SMASH_daily_forecasts/{}/CSEP_day_{}.csv'.format(opt.dataset, opt.day_number)):
+                        gen_df.to_csv(path_to_forecasts +'SMASH_daily_forecasts/{}/CSEP_day_{}.csv'.format(opt.dataset, opt.day_number), index=False)
                     else:
-                        gen_df.to_csv('/user/work/ss15859/SMASH_daily_forecasts/{}/CSEP_test_day_{}.csv'.format(opt.dataset, opt.day_number), mode='a', header=False, index=False)
+                        gen_df.to_csv(path_to_forecasts +'SMASH_daily_forecasts/{}/CSEP_day_{}.csv'.format(opt.dataset, opt.day_number), mode='a', header=False, index=False)
                     
 
 
