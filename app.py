@@ -79,7 +79,7 @@ def get_args():
     parser.add_argument('--test_nll_start', type=lambda s : pd.to_datetime(s,format='%Y-%m-%d:%H:%M:%S'), help='')
     parser.add_argument('--test_nll_end', type=lambda s : pd.to_datetime(s,format='%Y-%m-%d:%H:%M:%S'), help='')
     parser.add_argument('--marked_output', type=int, default=1, help='')
-    parser.add_argument('--num_catalogs', type=int, default=5000, help='')
+    parser.add_argument('--num_catalogs', type=int, default=1000, help='')
     parser.add_argument('--day_number', type=int, default=0, help='')
     args = parser.parse_args()
     args.cuda = torch.cuda.is_available()
@@ -662,8 +662,8 @@ if __name__ == "__main__":
                     # sort the df by catalog_id then time_string
                     gen_df = gen_df.sort_values(by=['catalog_id','time_string'])
 
-                    path_to_forecasts = './'
-                    # path_to_forecasts = '/user/work/ss15859/'
+                    # path_to_forecasts = './'
+                    path_to_forecasts = '/user/work/ss15859/'
 
                     # write batch to csv
                     if not os.path.exists(path_to_forecasts +'SMASH_daily_forecasts'):
