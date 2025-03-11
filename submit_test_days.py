@@ -30,6 +30,7 @@ datasets = {
 parser = argparse.ArgumentParser(description="Submit jobs for each test day between test_nll_start and test_nll_end.")
 parser.add_argument("--dataset", type=str, required=True, choices=datasets.keys(), help="Dataset name")
 parser.add_argument("--batch_size", type=int, default=768, help="Batch size for the jobs")
+parser.add_argument("--CPU", type=bool, default=False, help="Run on CPU")
 args = parser.parse_args()
 
 # Get the parameters for the selected dataset
@@ -41,13 +42,18 @@ batch_size = args.batch_size
 # Calculate the number of days between start and end dates
 num_days = (test_nll_end - test_nll_start).days
 
+if args.CPU:
+    cpu_string = "CPU"
+else:
+    cpu_string = ""
+
 # Loop over each day and submit a job
 for day_number in range(num_days):
     if args.dataset == "ComCat":
         # Skip the first 436 days for ComCat
         if day_number <= 436:
             continue
-    command = f"sbatch --output=slurm_outputs/{args.dataset}_day_{day_number}.out job.sh {args.dataset} {day_number} {batch_size}"
+    command = f"sbatch --output=slurm_outputs/{args.dataset}_day_{day_number}.out {cpu_string}job.sh {args.dataset} {day_number} {batch_size}"
     os.system(command)
     print(f"Submitted job for day {day_number}")
     
