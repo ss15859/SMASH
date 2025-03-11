@@ -87,13 +87,19 @@ def get_args():
     return args
 
 opt = get_args()
-device = torch.device("cuda:{}".format(opt.cuda_id) if opt.cuda else "cpu")
+device = torch.device("cpu") if not torch.cuda.is_available() else torch.device(f"cuda:{opt.cuda_id}")
 # device = torch.device("cpu")
 
 if opt.dataset == 'HawkesGMM':
     opt.dim=1
 
 os.environ['CUDA_VISIBLE_DEVICES'] = str(opt.cuda_id)
+
+# Force CPU usage if CUDA is not available
+if not torch.cuda.is_available():
+    print("CUDA not available, using CPU instead")
+    device = torch.device("cpu")
+    os.environ['CUDA_VISIBLE_DEVICES'] = ""
 
 def process_split(opt,df,pkl_filename):
 
@@ -755,7 +761,4 @@ if __name__ == "__main__":
                 torch.cuda.empty_cache()
 
         print('------- Training ---- Epoch: {} ;  Loss: {} --------'.format(itr, loss_all/total_num))
-
-
-
 
