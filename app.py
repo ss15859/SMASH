@@ -438,7 +438,7 @@ if __name__ == "__main__":
 
     Model = Model_all(transformer,decoder)
     if opt.mode == 'test' or opt.mode == 'sample':
-        Model.load_state_dict(torch.load(opt.weight_path))
+        Model.load_state_dict(torch.load(opt.weight_path, map_location=device))
         print('Weight loaded!!')
     total_params = sum(p.numel() for p in Model.parameters())
     print(f"Number of parameters: {total_params}")
