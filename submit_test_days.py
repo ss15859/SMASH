@@ -52,9 +52,9 @@ for day_number in range(num_days):
 
     # check if forecast already exists
     forecast_file = f"/user/work/ss15859/SMASH_daily_forecasts/{args.dataset}/CSEP_day_{day_number}.csv"
-    if os.path.exists(forecast_file):
-        print(f"Forecast for day {day_number} already exists")
-        continue
+    if not os.path.exists(forecast_file):
+        print(f"Forecast for day {day_number} doesn't exist")
+        
 
-    command = f"sbatch --output=slurm_outputs/{args.dataset}_day_{day_number}.out {cpu_string}job.sh {args.dataset} {day_number} {batch_size}"
-    os.system(command)
+        command = f"sbatch --output=slurm_outputs/{args.dataset}_day_{day_number}.out {cpu_string}job.sh {args.dataset} {day_number} {batch_size}"
+        os.system(command)
