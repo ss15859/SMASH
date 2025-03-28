@@ -49,11 +49,12 @@ else:
 
 # Loop over each day and submit a job
 for day_number in range(num_days):
-    if args.dataset == "ComCat":
-        # Skip the first 436 days for ComCat
-        if day_number <= 436:
-            continue
+
+    # check if forecast already exists
+    forecast_file = f"/user/work/ss15859/SMASH_daily_forecasts/{args.dataset}/CSEP_day_{day_number}.csv"
+    if os.path.exists(forecast_file):
+        print(f"Forecast for day {day_number} already exists")
+        continue
+
     command = f"sbatch --output=slurm_outputs/{args.dataset}_day_{day_number}.out {cpu_string}job.sh {args.dataset} {day_number} {batch_size}"
     os.system(command)
-    print(f"Submitted job for day {day_number}")
-    
