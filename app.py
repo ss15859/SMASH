@@ -668,8 +668,8 @@ if __name__ == "__main__":
                     # sort the df by catalog_id then time_string
                     gen_df = gen_df.sort_values(by=['catalog_id','time_string'])
 
-                    # path_to_forecasts = './'
-                    path_to_forecasts = '/user/work/ss15859/'
+                    path_to_forecasts = './'
+                    # path_to_forecasts = '/user/work/ss15859/'
 
                     # write batch to csv
                     if not os.path.exists(path_to_forecasts +'SMASH_daily_forecasts'):
